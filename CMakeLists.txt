@@ -603,10 +603,23 @@ if(PLATFORM STREQUAL "cli" OR PLATFORM STREQUAL "embedded" OR PLATFORM STREQUAL 
             file(MAKE_DIRECTORY "${SDL2_COMPAT_INCLUDE}/SDL2")
             file(WRITE "${SDL2_COMPAT_INCLUDE}/SDL2/SDL.h"
                  "#include \"${SDL2_ROOT}/include/SDL.h\"\n")
+            file(WRITE "${SDL2_COMPAT_INCLUDE}/SDL2/SDL_main.h"
+                 "#include \"${SDL2_ROOT}/include/SDL_main.h\"\n")
             target_include_directories(${BUTTERSCOTCH_TARGET} PRIVATE
                 "${SDL2_ROOT}/include"
                 "${SDL2_COMPAT_INCLUDE}")
-            set(BACKEND_LIBRARIES "${SDL2_ROOT}/lib/x64/SDL2.lib")
+            # The VC development package ships both architectures; pick the one
+            # matching the compiler so 32-bit external runtimes can be built.
+            if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+                set(SDL2_LIB_DIR "${SDL2_ROOT}/lib/x64")
+            else()
+                set(SDL2_LIB_DIR "${SDL2_ROOT}/lib/x86")
+            endif()
+            set(BACKEND_LIBRARIES "${SDL2_LIB_DIR}/SDL2.lib")
+            if(PLATFORM STREQUAL "cli")
+                # src/cli/main.c renames main to SDL_main via SDL_main.h.
+                list(APPEND BACKEND_LIBRARIES "${SDL2_LIB_DIR}/SDL2main.lib")
+            endif()
         else()
             find_package(PkgConfig REQUIRED)
             pkg_check_modules(SDL2 REQUIRED sdl2)
