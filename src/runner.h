@@ -5,6 +5,7 @@
 #include "audio_system.h"
 #include "data_win.h"
 #include "event_table.h"
+#include "external_functions.h"
 #include "file_system.h"
 #include "ini.h"
 #include "instance.h"
@@ -674,6 +675,8 @@ typedef struct {
 typedef struct { char* key; int32_t value; } AssetsByNameEntry;
 typedef struct { char* key; int value; } DisabledObjEntry;
 
+// Runtime external_define() definitions (see external_functions.h).
+
 struct Runner {
     DataWin* dataWin;
     VMContext* vmContext;
@@ -738,6 +741,7 @@ struct Runner {
     bool shouldExit;
     bool paused;
     bool debugMode;
+    bool headless; // no visible window; modal dialogs must not block
     // application_surface runtime state (mirrors GML toggles)
     bool appSurfaceEnabled;
     bool appSurfaceAutoDraw;
@@ -763,6 +767,8 @@ struct Runner {
     bool (*getWindowFullscreen)(void);
     void (*setWindowFullscreen)(bool fullscreen);
     void (*setCursor)(int32_t cursorType);
+    int64_t (*getWindowHandle)(void); // native window handle (HWND on Windows), 0 when unavailable
+    bool deviceMouseDbclickEnabled;   // device_mouse_dbclick_enable state
     int32_t currentCursor;  // last value passed to window_set_cursor
     int32_t cursorSprite;   // storages BUILTIN_VAR_CURSOR_SPRITE. Independent of currentCursor/setCursor
     int32_t cursorSpriteSubimage; // storages the current sprite subimage
@@ -837,6 +843,9 @@ struct Runner {
     ParticleSystem* particleSystemPool; // stb_ds array of ParticleSystem
     ParticleType* particleTypePool; // stb_ds array of ParticleType
     AudioEmitter* audioEmitters; // stb_ds array, index = audio emitter id
+
+    // Runtime external_define() definitions.
+    ExternalFunction** externalFunctions; // stb_ds array
 
     // Motion planning potential field settings
     GMLReal mpPotMaxrot;

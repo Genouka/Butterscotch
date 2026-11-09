@@ -202,8 +202,14 @@ void parseCommandLineArgs(CommandLineArgs* args, int argc, char* argv[]) {
     args->renderer = NOOP;
 #endif
 
-    // We need this if we run the parseCommandLineArgs on the same process twice
+    // We need this if we run the parseCommandLineArgs on the same process twice.
+    // GNU getopt requires 0 to reinitialize; the MSVC compat header starts scanning at
+    // optind itself, so 0 would treat argv[0] (the executable path) as the data path.
+#ifdef _MSC_VER
+    optind = 1;
+#else
     optind = 0;
+#endif
     int opt;
     while ((opt = getopt_long(argc, argv, "", longOptions, nullptr)) != -1) {
         switch (opt) {

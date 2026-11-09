@@ -22,6 +22,12 @@ typedef struct {
 typedef struct {
     // Resolve a game-relative path to a full platform path (caller frees result)
     char* (*resolvePath)(FileSystem* fs, const char* relativePath);
+    // Resolve a game-relative path the way a read would see it: the save area when the
+    // file exists there, otherwise the bundle area. Caller frees the result.
+    char* (*resolveReadPath)(FileSystem* fs, const char* relativePath);
+    // Absolute path of the writable save area, including the trailing separator.
+    // Returns nullptr when the platform has no distinct save area. Caller frees.
+    char* (*getSavePath)(FileSystem* fs);
     // Check if a file exists
     bool (*fileExists)(FileSystem* fs, const char* relativePath);
     // Read entire file contents into a string (caller frees result), returns nullptr if not found

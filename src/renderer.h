@@ -169,6 +169,9 @@ typedef struct {
     void (*flush)(Renderer* renderer);
     void (*clearScreen)(Renderer* renderer, uint32_t color, float alpha);
     int32_t (*createSpriteFromSurface)(Renderer* renderer, int32_t surfaceID, int32_t x, int32_t y, int32_t w, int32_t h, bool removeback, bool smooth, int32_t xorig, int32_t yorig);
+    // Optional: uploads an RGBA8 atlas as a new texture page and registers a TPAG for it.
+    // Used by font_add(). Returns the texture page id, or -1 on failure; outTpagIndex receives the TPAG index.
+    int32_t (*createFontTexture)(Renderer* renderer, int32_t width, int32_t height, const uint8_t* rgba, int32_t* outTpagIndex);
     void (*deleteSprite)(Renderer* renderer, int32_t spriteIndex);
     BlendFactors (*gpuGetBlendFactors)(Renderer* renderer);
     int32_t (*gpuGetBlendMode)(Renderer* renderer);

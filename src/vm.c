@@ -20,6 +20,10 @@
 
 #include <assert.h>
 
+#ifdef BSDBG
+#include "bsdbg_hooks.h"
+#endif
+
 // ===[ Stack Operations ]===
 
 #ifdef ENABLE_VM_TRACING
@@ -2810,6 +2814,9 @@ static RValue executeBytecodeInstructions(VMContext* ctx, CodeEntry* code) {
     // Some opcodes have their handler or parts of their handler inlined
     // Those are opcodes that during real gameplay (using "--profile-opcodes") shown that, with inlining and keeping only the frequently called handle parts, we could squeeze MORE performance from the interpreter!
     while (codeLength > ip) {
+#ifdef BSDBG
+        BsdbgHook_VmInstruction(ctx, ip);
+#endif
 #ifdef ENABLE_WAD17
         if (ctx->exception != nullptr) {
 #ifdef ENABLE_VM_EXCEPTIONS_LOGS

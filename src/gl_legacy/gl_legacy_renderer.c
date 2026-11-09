@@ -1714,6 +1714,53 @@ static uint32_t findOrAllocTpagSlot(DataWin* dw, uint32_t originalTpagCount) {
     return newIndex;
 }
 
+// Uploads a runtime-generated RGBA8 atlas (used by font_add) as a full texture page.
+// Returns the page id and publishes a TPAG that covers the whole page.
+static int32_t glCreateFontTexture(Renderer* renderer, int32_t width, int32_t height, const uint8_t* rgba, int32_t* outTpagIndex) {
+    GLRenderer* gl = (GLRenderer*) renderer;
+    DataWin* dw = renderer->dataWin;
+    if (dw == nullptr || rgba == nullptr || outTpagIndex == nullptr || width <= 0 || height <= 0) return -1;
+
+    GLint previousTexture = 0;
+    GLint previousUnpackAlignment = 4;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &previousUnpackAlignment);
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, gl->textureFormat, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, previousUnpackAlignment);
+    GLCommon_applyTexFilter(renderer->texFilter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, (GLuint) previousTexture);
+
+    uint32_t pageId = findOrAllocTexturePageSlot(gl);
+    gl->glTextures[pageId] = texture;
+    gl->textureWidths[pageId] = width;
+    gl->textureHeights[pageId] = height;
+    gl->textureLoaded[pageId] = true;
+
+    uint32_t tpagIndex = findOrAllocTpagSlot(dw, gl->originalTpagCount);
+    TexturePageItem* tpag = &dw->tpag.items[tpagIndex];
+    tpag->sourceX = 0;
+    tpag->sourceY = 0;
+    tpag->sourceWidth = (uint16_t) width;
+    tpag->sourceHeight = (uint16_t) height;
+    tpag->targetX = 0;
+    tpag->targetY = 0;
+    tpag->targetWidth = (uint16_t) width;
+    tpag->targetHeight = (uint16_t) height;
+    tpag->boundingWidth = (uint16_t) width;
+    tpag->boundingHeight = (uint16_t) height;
+    tpag->texturePageId = (int16_t) pageId;
+
+    *outTpagIndex = (int32_t) tpagIndex;
+    return (int32_t) pageId;
+}
+
 static int32_t glCreateSpriteFromSurface(Renderer* renderer, int32_t surfaceID, int32_t x, int32_t y, int32_t w, int32_t h, bool removeback, bool smooth, int32_t xorig, int32_t yorig) {
     // TODO: implement these
     (void)smooth;
@@ -2416,6 +2463,7 @@ Renderer* GLLegacyRenderer_create(void) {
     glVtable.flush = glRendererFlush;
     glVtable.clearScreen = glClearScreen;
     glVtable.createSpriteFromSurface = glCreateSpriteFromSurface;
+    glVtable.createFontTexture = glCreateFontTexture;
     glVtable.deleteSprite = glDeleteSprite;
     glVtable.gpuGetBlendFactors = glGpuGetBlendFactors;
     glVtable.gpuGetBlendMode = glGpuGetBlendMode;

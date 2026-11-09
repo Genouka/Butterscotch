@@ -277,6 +277,30 @@ static bool fileExists(FileSystem* fs, const char* relativePath) {
     return false;
 }
 
+// Returns the first mapped path that actually opens for reading, matching readFileText().
+static char* resolveReadPath(FileSystem* fs, const char* relativePath) {
+    Ps2FileSystem* pfs = (Ps2FileSystem*) fs;
+    ptrdiff_t idx = shgeti(pfs->mappings, relativePath);
+    if (0 > idx)
+        return nullptr;
+
+    char** paths = pfs->mappings[idx].value;
+    int pathCount = arrlen(paths);
+    repeat(pathCount, i) {
+        FILE* f = fopen(paths[i], "rb");
+        if (f != nullptr) {
+            fclose(f);
+            return safeStrdup(paths[i]);
+        }
+    }
+    return nullptr;
+}
+
+// PS2 has no single save-area root; writes are routed per mapping through CONFIG.JSN.
+static char* getSavePath(MAYBE_UNUSED FileSystem* fs) {
+    return nullptr;
+}
+
 static char* readFileText(FileSystem* fs, const char* relativePath) {
     Ps2FileSystem* pfs = (Ps2FileSystem*) fs;
     ptrdiff_t idx = shgeti(pfs->mappings, relativePath);
@@ -586,6 +610,8 @@ FileSystem* Ps2FileSystem_create(JsonValue* configRoot, const char* gameTitle) {
     Ps2FileSystem* pfs = (Ps2FileSystem *)safeCalloc(1, sizeof(Ps2FileSystem));
     pfs->base.vtable = &ps2FileSystemVtable;
     ps2FileSystemVtable.resolvePath = resolvePath;
+    ps2FileSystemVtable.resolveReadPath = resolveReadPath;
+    ps2FileSystemVtable.getSavePath = getSavePath;
     ps2FileSystemVtable.fileExists = fileExists;
     ps2FileSystemVtable.readFileText = readFileText;
     ps2FileSystemVtable.writeFileText = writeFileText;

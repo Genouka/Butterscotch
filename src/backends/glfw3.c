@@ -11,6 +11,10 @@
 #include <glad/glad.h>
 #endif
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include "common.h"
 #include "input_recording.h"
@@ -354,10 +358,19 @@ static void platformSetCursor(int32_t cursorType) {
     }
 }
 
+static int64_t platformGetWindowHandle(void) {
+#ifdef _WIN32
+    if (window != NULL) return (int64_t) (intptr_t) glfwGetWin32Window(window);
+#endif
+    // TODO: native window handles are implemented for Windows only.
+    return 0;
+}
+
 void platformInitFunctions(Runner *runner) {
     g_runner = runner;
     runner->windowHasFocus = platformGetWindowFocus;
     runner->setCursor = platformSetCursor;
+    runner->getWindowHandle = platformGetWindowHandle;
     runner->currentCursor = GML_CR_DEFAULT;
     runner->getWindowPosition = platformGetWindowPosition;
     runner->setWindowPosition = platformSetWindowPosition;

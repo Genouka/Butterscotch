@@ -9,6 +9,7 @@
 #include "json_writer.h"
 #include "collision.h"
 #include "video.h"
+#include "external_functions.h"
 #include "fmod/fmod.h"
 
 #include <stdint.h>
@@ -2291,6 +2292,7 @@ static void cleanupState(Runner* runner) {
         SpatialGrid_free(runner->spatialGrid);
         runner->spatialGrid = nullptr;
     }
+    External_freeAll(runner);
 }
 
 // ===[ Public API ]===
@@ -2356,6 +2358,7 @@ void Runner_reset(Runner* runner) {
     runner->mpPotOnSpot = true;
     runner->dateTimeLocal = true;
     runner->mathEpsilon = GML_MATH_EPSILON;
+    runner->deviceMouseDbclickEnabled = true;
     runner->lastMusicInstance = -1;
 
     arrsetlen(runner->cachedDrawables, 0);

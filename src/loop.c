@@ -4,6 +4,10 @@
 #include "vm.h"
 #include "loop.h"
 
+#ifdef BSDBG
+#include "bsdbg_hooks.h"
+#endif
+
 #include "platformdefs.h"
 #include "stdio_compat.h"
 #include <stdlib.h>
@@ -520,10 +524,19 @@ int loop(CommandLineArgs args, const char *argv0) {
     timeBeginPeriod(1);
 #endif
     char* currentDataWinPath = safeStrdup(args.dataWinPath);
+#ifdef BSDBG
+    /* ButterscotchDbg owns the caller-supplied array, and loop() frees this
+     * one on shutdown: duplicate the strings so ownership stays separate. */
+    char** currentGameArgs = nullptr;
+    repeat(arrlen(args.gameArgs), i) {
+        arrput(currentGameArgs, safeStrdup(args.gameArgs[i]));
+    }
+#else
     char** currentGameArgs = args.gameArgs;
     repeat(arrlen(args.gameArgs), i) {
         arrput(currentGameArgs, args.gameArgs[i]);
     }
+#endif
     // The first argument will ALWAYS be the argv[0]
     arrins(currentGameArgs, 0, safeStrdup(argv0 != nullptr ? argv0 : ""));
 
@@ -992,6 +1005,7 @@ int loop(CommandLineArgs args, const char *argv0) {
             }
         }
         runner->debugMode = args.debug;
+        runner->headless = args.headless;
         runner->osType = args.osType;
         runner->setWindowSize = platformSetWindowSize;
         runner->getWindowSize = platformGetWindowSize;
@@ -1048,6 +1062,9 @@ int loop(CommandLineArgs args, const char *argv0) {
 #endif
 
         // Initialize the first room and fire Game Start / Room Start events
+#ifdef BSDBG
+        BsdbgHook_LoopStart(runner, vm);
+#endif
         Runner_initFirstRoom(runner);
 
         // Main loop
@@ -1061,6 +1078,12 @@ int loop(CommandLineArgs args, const char *argv0) {
         uint64_t lastFrameStartTime = lastFrameTime; // for delta_time
         bool shouldWindowClose = false;
         while (true) {
+#ifdef BSDBG
+            if (BsdbgHook_ShouldExit()) {
+                actuallyShuttingDown = true;
+                break;
+            }
+#endif
             if (runner->shouldExit || shouldWindowClose) {
                 actuallyShuttingDown = true;
                 break;
@@ -1240,6 +1263,9 @@ int loop(CommandLineArgs args, const char *argv0) {
             // Run one game step (Begin Step, Keyboard, Alarms, Step, End Step, room transitions)
             if (shouldStep) {
                 Runner_step(runner);
+#ifdef BSDBG
+                BsdbgHook_FrameBoundary(runner);
+#endif
             }
 
             if (freeCamActive) {

@@ -246,10 +246,23 @@ static void platformSetCursor(int32_t cursorType) {
     }
 }
 
+static int64_t platformGetWindowHandle(void) {
+#if defined(_WIN32) && defined(SDL_PROP_WINDOW_WIN32_HWND_POINTER)
+    if (window != NULL) {
+        SDL_PropertiesID properties = SDL_GetWindowProperties(window);
+        void* handle = SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+        return (int64_t) (intptr_t) handle;
+    }
+#endif
+    // TODO: native window handles are implemented for Windows only.
+    return 0;
+}
+
 void platformInitFunctions(Runner *runner) {
     g_runner = runner;
     runner->windowHasFocus = platformGetWindowFocus;
     runner->setCursor = platformSetCursor;
+    runner->getWindowHandle = platformGetWindowHandle;
     runner->getWindowPosition = platformGetWindowPosition;
     runner->setWindowPosition = platformSetWindowPosition;
     runner->getWindowFullscreen = platformGetWindowFullscreen;

@@ -136,6 +136,18 @@ static char* overlayResolvePath(FileSystem* fs, const char* relativePath) {
     return full;
 }
 
+// Same overlay rule as resolveForRead, exposed through the vtable so callers that need
+// the actual on-disk location of a readable file (external_define, for one) agree with
+// what fileExists() reported.
+static char* overlayResolveReadPath(FileSystem* fs, const char* relativePath) {
+    return resolveForRead((OverlayFileSystem*) fs, relativePath);
+}
+
+// The save area is the writable half of the sandbox (game_save_id).
+static char* overlayGetSavePath(FileSystem* fs) {
+    return safeStrdup(((OverlayFileSystem*) fs)->savePath);
+}
+
 static bool overlayFileExists(FileSystem* fs, const char* relativePath) {
     char* fullPath = resolveForRead((OverlayFileSystem*) fs, relativePath);
     bool exists = pathExists(fullPath);
@@ -433,6 +445,8 @@ OverlayFileSystem* OverlayFileSystem_create(const char* bundlePath, const char* 
     OverlayFileSystem* fs = (OverlayFileSystem *)safeCalloc(1, sizeof(OverlayFileSystem));
     fs->base.vtable = &overlayFileSystemVtable;
     overlayFileSystemVtable.resolvePath = overlayResolvePath;
+    overlayFileSystemVtable.resolveReadPath = overlayResolveReadPath;
+    overlayFileSystemVtable.getSavePath = overlayGetSavePath;
     overlayFileSystemVtable.fileExists = overlayFileExists;
     overlayFileSystemVtable.readFileText = overlayReadFileText;
     overlayFileSystemVtable.writeFileText = overlayWriteFileText;

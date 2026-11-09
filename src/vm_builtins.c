@@ -13,6 +13,8 @@
 #include "matrix_math.h"
 #include "utils.h"
 #include "random.h"
+#include "external_functions.h"
+#include "font_runtime.h"
 
 #include "stdio_compat.h"
 #include <stdlib.h>
@@ -338,6 +340,7 @@ static const BuiltinVarEntry BUILTIN_VAR_TABLE[] = {
     { "fps_real", BUILTIN_VAR_FPS_REAL },
     { "friction", BUILTIN_VAR_FRICTION },
     { "game_id", BUILTIN_VAR_GAME_ID },
+    { "game_save_id", BUILTIN_VAR_GAME_SAVE_ID },
     { "gp_axislh", BUILTIN_VAR_GP_AXIS_LH },
     { "gp_axislv", BUILTIN_VAR_GP_AXIS_LV },
     { "gp_axisrh", BUILTIN_VAR_GP_AXIS_RH },
@@ -632,6 +635,13 @@ RValue VMBuiltins_getVariable(VMContext* ctx, Instance* inst, int16_t builtinVar
         case BUILTIN_VAR_WORKING_DIRECTORY: {
             FileSystem* fs = runner->fileSystem;
             return RValue_makeOwnedString(fs->vtable->resolvePath(fs, ""));
+        }
+        case BUILTIN_VAR_GAME_SAVE_ID: {
+            FileSystem* fs = runner->fileSystem;
+            char* savePath = (fs != NULL && fs->vtable != NULL && fs->vtable->getSavePath != NULL)
+                ? fs->vtable->getSavePath(fs)
+                : NULL;
+            return RValue_makeOwnedString(savePath != NULL ? savePath : safeStrdup(""));
         }
 
         // OS constants
@@ -1928,6 +1938,82 @@ static RValue builtin_show_error(VMContext* ctx, RValue* args, int32_t argCount)
     }
 
     return RValue_makeUndefined();
+}
+
+#ifdef _WIN32
+#ifndef CP_UTF8
+#define CP_UTF8 65001
+#endif
+
+static wchar_t* vmUtf8ToWideDup(const char* text) {
+    if (text == NULL) return NULL;
+    int32_t length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+    if (length <= 0) return NULL;
+    wchar_t* wide = (wchar_t*) safeMalloc((size_t) length * sizeof(wchar_t));
+    if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) <= 0) {
+        free(wide);
+        return NULL;
+    }
+    return wide;
+}
+
+static HWND vmMessageBoxOwner(VMContext* ctx) {
+    if (ctx->runner != NULL && ctx->runner->getWindowHandle != NULL) {
+        return (HWND) (uintptr_t) ctx->runner->getWindowHandle();
+    }
+    return NULL;
+}
+
+// Returns false when there is no native window (headless/noop backend), in which
+// case the message is only logged instead of blocking on a modal dialog.
+static bool vmShowMessageBox(VMContext* ctx, const char* text, UINT type, int* outResult) {
+    if (ctx->runner == NULL || ctx->runner->headless) return false;
+    HWND owner = vmMessageBoxOwner(ctx);
+    if (owner == NULL) return false;
+
+    wchar_t* wideText = vmUtf8ToWideDup(text);
+    if (wideText == NULL) return false;
+    int result = MessageBoxW(owner, wideText, L"Butterscotch", type);
+    free(wideText);
+    if (outResult != NULL) *outResult = result;
+    return true;
+}
+#endif
+
+static RValue builtin_show_message(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("show_message", 1, RValue_makeUndefined());
+    char* text = RValue_toString(args[0], ctx->runner->dataWin);
+#ifdef _WIN32
+    if (!vmShowMessageBox(ctx, text, MB_OK | MB_ICONINFORMATION, NULL)) {
+        logInfo("[show_message] %s\n", text);
+    }
+#else
+    // TODO: native message box for this platform.
+    logWarn("[show_message] TODO: native message boxes are not implemented on this platform\n");
+    logInfo("[show_message] %s\n", text);
+#endif
+    free(text);
+    return RValue_makeUndefined();
+}
+
+static RValue builtin_show_question(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("show_question", 1, RValue_makeBool(false));
+    char* text = RValue_toString(args[0], ctx->runner->dataWin);
+    bool answer = false;
+#ifdef _WIN32
+    int result = IDNO;
+    if (vmShowMessageBox(ctx, text, MB_YESNO | MB_ICONQUESTION, &result)) {
+        answer = result == IDYES;
+    } else {
+        logInfo("[show_question] %s -> no window, returning false\n", text);
+    }
+#else
+    // TODO: native yes/no dialog for this platform.
+    logWarn("[show_question] TODO: native message boxes are not implemented on this platform\n");
+    logInfo("[show_question] %s -> false\n", text);
+#endif
+    free(text);
+    return RValue_makeBool(answer);
 }
 
 static RValue builtin_string_length(MAYBE_UNUSED VMContext* ctx, RValue* args, int32_t argCount) {
@@ -3957,6 +4043,95 @@ static RValue builtin_room_set_persistent(VMContext* ctx, RValue* args, MAYBE_UN
 // Extensions
 
 STUB_RETURN_FALSE(extension_exists)
+
+// ===[ external_define / external_call / external_free ]===
+// Loading, symbol resolution (including 32-bit stdcall decorations) and ABI dispatch live
+// in external_functions.c so the same code is exercised by the native smoke tests.
+
+static RValue builtin_external_define(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("external_define", 5, RValue_makeReal(-1.0));
+
+    char* dllName = RValue_toString(args[0], ctx->runner->dataWin);
+    char* functionName = RValue_toString(args[1], ctx->runner->dataWin);
+    int32_t callType = RValue_toInt32(args[2]);
+    int32_t returnType = RValue_toInt32(args[3]);
+    int32_t declaredArgCount = RValue_toInt32(args[4]);
+    if (declaredArgCount < 0 || declaredArgCount > EXTERNAL_MAX_ARGS || argCount < 5 + declaredArgCount) {
+        logWarn("[external_define] Invalid argument count %d for '%s'\n", declaredArgCount, functionName);
+        free(dllName);
+        free(functionName);
+        return RValue_makeReal(-1.0);
+    }
+
+    int32_t argTypes[EXTERNAL_MAX_ARGS] = {0};
+    for (int32_t i = 0; i < declaredArgCount; i++) {
+        argTypes[i] = RValue_toInt32(args[5 + i]) == 1 ? 1 : 0;
+    }
+
+    int32_t id = External_define(ctx->runner, dllName, functionName, callType, returnType,
+                                 declaredArgCount, argTypes);
+    free(dllName);
+    free(functionName);
+    return RValue_makeReal((GMLReal) id);
+}
+
+static RValue builtin_external_call(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("external_call", 1, RValue_makeReal(0.0));
+
+    int32_t id = RValue_toInt32(args[0]);
+    if (id < 0 || id >= (int32_t) arrlen(ctx->runner->externalFunctions)) {
+        logWarn("[external_call] Invalid external function id %d\n", id);
+        return RValue_makeReal(0.0);
+    }
+
+    ExternalFunction* definition = ctx->runner->externalFunctions[id];
+    if (definition == NULL) {
+        logWarn("[external_call] External function id %d was already freed\n", id);
+        return RValue_makeReal(0.0);
+    }
+    if (argCount - 1 != definition->argCount) {
+        logWarn("[external_call] '%s' expects %d arguments, got %d\n", definition->functionName, definition->argCount, argCount - 1);
+        return definition->returnType == 1 ? RValue_makeOwnedString(safeStrdup("")) : RValue_makeReal(0.0);
+    }
+
+    double realArgs[EXTERNAL_MAX_ARGS + 1] = {0};
+    char* stringArgs[EXTERNAL_MAX_ARGS + 1] = {0};
+    int32_t stringMask = 0;
+    for (int32_t i = 0; i < definition->argCount; i++) {
+        if (definition->argTypes[i] == 1) {
+            stringArgs[i] = RValue_toString(args[i + 1], ctx->runner->dataWin);
+            stringMask |= 1 << i;
+        } else {
+            realArgs[i] = RValue_toReal(args[i + 1]);
+        }
+    }
+
+    double realResult = 0.0;
+    char* stringResult = NULL;
+    bool invoked = External_invokeRaw(definition, realArgs, stringArgs, stringMask, &realResult, &stringResult);
+
+    for (int32_t i = 0; i < definition->argCount; i++) {
+        free(stringArgs[i]);
+    }
+
+    if (!invoked) {
+        logWarn("[external_call] Unsupported signature for '%s' (argc=%d, stringMask=%d)\n",
+                definition->functionName, definition->argCount, stringMask);
+        return definition->returnType == 1 ? RValue_makeOwnedString(safeStrdup("")) : RValue_makeReal(0.0);
+    }
+    return definition->returnType == 1
+        ? RValue_makeOwnedString(stringResult != NULL ? stringResult : safeStrdup(""))
+        : RValue_makeReal(realResult);
+}
+
+static RValue builtin_external_free(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("external_free", 1, RValue_makeUndefined());
+    int32_t id = RValue_toInt32(args[0]);
+    if (!External_free(ctx->runner, id)) {
+        logWarn("[external_free] Invalid external function id %d\n", id);
+    }
+    return RValue_makeUndefined();
+}
 
 // GMS2 camera compatibility - we treat view index as camera ID
 static RValue builtin_view_get_camera(VMContext* ctx, RValue* args, int32_t argCount) {
@@ -9618,6 +9793,15 @@ static RValue builtinDeviceMouseCheckButton(VMContext* ctx, RValue* args, int32_
     return RValue_makeBool(RunnerMouse_checkButton(runner->mouse, button));
 }
 
+// device_mouse_dbclick_enable(enabled)
+// Desktop platforms already distinguish real double-clicks; this only stores the
+// requested state. TODO: synthesize mb_right from a double tap on touch platforms.
+static RValue builtin_device_mouse_dbclick_enable(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("device_mouse_dbclick_enable", 1, RValue_makeBool(false));
+    ctx->runner->deviceMouseDbclickEnabled = RValue_toBool(args[0]);
+    return RValue_makeBool(ctx->runner->deviceMouseDbclickEnabled);
+}
+
 static RValue builtinMouseCheckButton(VMContext* ctx, RValue* args, int32_t argCount) {
     REQUIRE_ARGC_AT_LEAST("mouse_check_button", 1, RValue_makeBool(false));
     Runner* runner = (Runner*) ctx->runner;
@@ -9922,6 +10106,23 @@ static RValue builtin_window_get_cursor(VMContext* ctx, MAYBE_UNUSED RValue* arg
     Runner* runner = ctx->runner;
     if (runner == nullptr) return RValue_makeReal(0);
     return RValue_makeReal(runner->currentCursor);
+}
+
+static RValue builtin_window_handle(VMContext* ctx, MAYBE_UNUSED RValue* args, MAYBE_UNUSED int32_t argCount) {
+    Runner* runner = ctx->runner;
+    if (runner != NULL && runner->getWindowHandle != NULL) {
+        uintptr_t handle = (uintptr_t) runner->getWindowHandle();
+        if (handle != 0) {
+            // GML's window_handle returns a Pointer; its string representation is hex,
+            // which is what extensions expect for a ty_string argument.
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%llX", (unsigned long long) handle);
+            return RValue_makeOwnedString(safeStrdup(buf));
+        }
+    }
+    // TODO: native window handles are only implemented for Windows GLFW/SDL backends.
+    logWarn("[window_handle] TODO: native window handle is not implemented on this platform\n");
+    return RValue_makeOwnedString(safeStrdup("0"));
 }
 
 // ===[ Game State Functions ]===
@@ -15138,6 +15339,16 @@ static RValue builtin_date_second_span(VMContext* ctx, RValue* args, int32_t arg
     return RValue_makeReal(GMLReal_fabs(diff));
 }
 
+static RValue builtin_date_compare_datetime(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("date_compare_datetime", 2, RValue_makeReal(0.0));
+    GMLReal date1 = RValue_toReal(args[0]);
+    GMLReal date2 = RValue_toReal(args[1]);
+    if (isnan(date1) || isnan(date2)) return RValue_makeReal(0.0);
+    if (date1 < date2) return RValue_makeReal(-1.0);
+    if (date1 > date2) return RValue_makeReal(1.0);
+    return RValue_makeReal(0.0);
+}
+
 static RValue builtin_date_set_timezone(VMContext* ctx, RValue* args, int32_t argCount) {
     REQUIRE_ARGC_AT_LEAST("date_set_timezone", 1, RValue_makeUndefined());
     ctx->runner->dateTimeLocal = RValue_toInt32(args[0]) == 0;
@@ -19995,6 +20206,24 @@ static RValue builtin_font_add_sprite(VMContext* ctx, RValue* args, int32_t argC
     return fontAddSpriteImpl(ctx, spriteIndex, charCodes, frameCount, proportional, sep);
 }
 
+// font_add(name, size, bold, italic, first, last)
+// On Windows this loads either an included .ttf file or an installed system font
+// through GDI and uploads a runtime glyph atlas. Other platforms are TODO.
+static RValue builtin_font_add(VMContext* ctx, RValue* args, int32_t argCount) {
+    REQUIRE_ARGC_AT_LEAST("font_add", 6, RValue_makeReal(-1.0));
+
+    char* name = RValue_toString(args[0], ctx->runner->dataWin);
+    double size = (double) RValue_toReal(args[1]);
+    bool bold = RValue_toBool(args[2]);
+    bool italic = RValue_toBool(args[3]);
+    int32_t first = RValue_toInt32(args[4]);
+    int32_t last = RValue_toInt32(args[5]);
+
+    int32_t fontIndex = RuntimeFont_add(ctx->runner, name, size, bold, italic, first, last);
+    free(name);
+    return RValue_makeReal((GMLReal) fontIndex);
+}
+
 static RValue builtin_asset_get_index(VMContext* ctx, RValue* args, int32_t argCount) {
     REQUIRE_ARGC_AT_LEAST("asset_get_index", 1, RValue_makeUndefined());
 
@@ -24480,6 +24709,8 @@ void VMBuiltins_registerAll(VMContext* ctx) {
     // Core output
     VM_registerBuiltin(ctx, "show_debug_message", builtin_show_debug_message);
     VM_registerBuiltin(ctx, "show_error", builtin_show_error);
+    VM_registerBuiltin(ctx, "show_message", builtin_show_message);
+    VM_registerBuiltin(ctx, "show_question", builtin_show_question);
 
     // Legacy unlit 3D
     VM_registerBuiltin(ctx, "d3d_start", builtin_d3d_start);
@@ -24712,6 +24943,9 @@ void VMBuiltins_registerAll(VMContext* ctx) {
 
     // Extension
     VM_registerBuiltin(ctx, "extension_exists", builtin_extension_exists);
+    VM_registerBuiltin(ctx, "external_define", builtin_external_define);
+    VM_registerBuiltin(ctx, "external_call", builtin_external_call);
+    VM_registerBuiltin(ctx, "external_free", builtin_external_free);
 
     // GMS2 camera compatibility
     VM_registerBuiltin(ctx, "view_get_camera", builtin_view_get_camera);
@@ -25117,6 +25351,7 @@ void VMBuiltins_registerAll(VMContext* ctx) {
     VM_registerBuiltin(ctx, "window_has_focus", builtin_window_has_focus);
     VM_registerBuiltin(ctx, "window_set_cursor", builtin_window_set_cursor);
     VM_registerBuiltin(ctx, "window_get_cursor", builtin_window_get_cursor);
+    VM_registerBuiltin(ctx, "window_handle", builtin_window_handle);
 
     // Game
     VM_registerBuiltin(ctx, "game_restart", builtin_game_restart);
@@ -25403,6 +25638,7 @@ void VMBuiltins_registerAll(VMContext* ctx) {
 
     // Devices
     VM_registerBuiltin(ctx, "device_mouse_check_button", builtinDeviceMouseCheckButton);
+    VM_registerBuiltin(ctx, "device_mouse_dbclick_enable", builtin_device_mouse_dbclick_enable);
     VM_registerBuiltin(ctx, "device_mouse_x", builtinDeviceMouseX);
     VM_registerBuiltin(ctx, "device_mouse_y", builtinDeviceMouseY);
     VM_registerBuiltin(ctx, "device_mouse_x_to_gui", builtinDeviceMouseXToGui);
@@ -25780,6 +26016,7 @@ void VMBuiltins_registerAll(VMContext* ctx) {
     VM_registerBuiltin(ctx, "date_get_minute", builtin_date_get_minute);
     VM_registerBuiltin(ctx, "date_get_second", builtin_date_get_second);
     VM_registerBuiltin(ctx, "date_second_span", builtin_date_second_span);
+    VM_registerBuiltin(ctx, "date_compare_datetime", builtin_date_compare_datetime);
     VM_registerBuiltin(ctx, "date_set_timezone", builtin_date_set_timezone);
     VM_registerBuiltin(ctx, "date_get_timezone", builtin_date_get_timezone);
     VM_registerBuiltin(ctx, "date_date_string", builtin_date_date_string);
@@ -25840,6 +26077,7 @@ void VMBuiltins_registerAll(VMContext* ctx) {
     VM_registerBuiltin(ctx, "json_parse", builtin_json_parse);
     VM_registerBuiltin(ctx, "json_encode", builtin_json_encode);
     VM_registerBuiltin(ctx, "font_add_sprite", builtin_font_add_sprite);
+    VM_registerBuiltin(ctx, "font_add", builtin_font_add);
     VM_registerBuiltin(ctx, "font_add_sprite_ext", builtin_font_add_sprite_ext);
     VM_registerBuiltin(ctx, "font_exists", builtin_font_exists);
     VM_registerBuiltin(ctx, "font_get_name", builtin_font_get_name);

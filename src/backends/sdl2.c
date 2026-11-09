@@ -2,6 +2,18 @@
 #include "stdio_compat.h"
 
 #include <SDL2/SDL.h>
+#ifdef _WIN32
+/* SDL2 dev packages differ in whether headers are under an SDL2/ prefix. */
+#  if defined(__has_include)
+#    if __has_include(<SDL2/SDL_syswm.h>)
+#      include <SDL2/SDL_syswm.h>
+#    elif __has_include(<SDL_syswm.h>)
+#      include <SDL_syswm.h>
+#    endif
+#  else
+#    include <SDL2/SDL_syswm.h>
+#  endif
+#endif
 
 #include "common.h"
 #include "input_recording.h"
@@ -306,10 +318,25 @@ static void platformSetCursor(int32_t cursorType) {
     }
 }
 
+static int64_t platformGetWindowHandle(void) {
+#ifdef _WIN32
+    if (window != NULL) {
+        SDL_SysWMinfo info;
+        SDL_VERSION(&info.version);
+        if (SDL_GetWindowWMInfo(window, &info) && info.subsystem == SDL_SYSWM_WINDOWS) {
+            return (int64_t) (intptr_t) info.info.win.window;
+        }
+    }
+#endif
+    // TODO: native window handles are implemented for Windows only.
+    return 0;
+}
+
 void platformInitFunctions(Runner *runner) {
     g_runner = runner;
     runner->windowHasFocus = platformGetWindowFocus;
     runner->setCursor = platformSetCursor;
+    runner->getWindowHandle = platformGetWindowHandle;
     runner->getWindowPosition = platformGetWindowPosition;
     runner->setWindowPosition = platformSetWindowPosition;
     runner->getWindowFullscreen = platformGetWindowFullscreen;

@@ -41,6 +41,14 @@ static char* noopResolvePath(MAYBE_UNUSED FileSystem* fs, MAYBE_UNUSED const cha
     return safeStrdup("./");
 }
 
+static char* noopResolveReadPath(FileSystem* fs, const char* relativePath) {
+    return noopResolvePath(fs, relativePath);
+}
+
+static char* noopGetSavePath(MAYBE_UNUSED FileSystem* fs) {
+    return safeStrdup("./");
+}
+
 static bool noopFileExists(FileSystem* fs, const char* relativePath) {
     NoopFileSystem* nfs = (NoopFileSystem*) fs;
     return shgeti(nfs->files, relativePath) >= 0;
