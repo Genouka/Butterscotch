@@ -39,7 +39,15 @@ static inline char* normalizePath(const char* path) {
 }
 
 static bool isAbsolute(const char* path) {
-    return path != nullptr && path[0] == '/';
+    if (path == nullptr || path[0] == '\0') return false;
+    if (path[0] == '/') return true;
+    // Windows drive-letter paths (C:/...) and UNC shares. GML's
+    // working_directory/program_directory come back in this form, and treating
+    // them as relative made every absolute file access resolve against the
+    // bundle directory a second time.
+    if (((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')) && path[1] == ':')
+        return true;
+    return false;
 }
 
 // Joins basePath (assumed to end with '/') with a relative path. Absolute inputs pass through as-is.
@@ -427,17 +435,15 @@ static FileSystemVtable overlayFileSystemVtable;
 // Returns a heap-allocated copy of `path` guaranteed to end with '/'. Empty input becomes "./".
 static char* withTrailingSlash(const char* path) {
     if (path == nullptr || path[0] == '\0') return safeStrdup("./");
-    size_t len = strlen(path);
-    char last = path[len - 1];
-    if (last == '/' || last == '\\') {
-        char* out = safeStrdup(path);
-        if (last == '\\') out[len - 1] = '/';
-        return out;
+    // Normalise separators so absolute-path prefix checks and joins agree on
+    // one spelling (GML exposes '/' paths even on Windows).
+    char* out = normalizePath(path);
+    size_t len = strlen(out);
+    if (len == 0 || out[len - 1] != '/') {
+        out = (char *)safeRealloc(out, len + 2);
+        out[len] = '/';
+        out[len + 1] = '\0';
     }
-    char* out = (char *)safeMalloc(len + 2);
-    memcpy(out, path, len);
-    out[len] = '/';
-    out[len + 1] = '\0';
     return out;
 }
 

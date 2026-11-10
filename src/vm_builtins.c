@@ -630,8 +630,12 @@ RValue VMBuiltins_getVariable(VMContext* ctx, Instance* inst, int16_t builtinVar
     if (builtinVarId >= PHYSICS_VARIABLE_BASE) return Physics_getVariable(runner, inst, builtinVarId);
     switch (builtinVarId) {
         // File system
+        // program_directory is the game folder in GameMaker (where the executable
+        // with the data file lives). The embedded runner has no game executable,
+        // so both builtins point at the data.win directory; the runner's own
+        // executable folder is meaningless to GML and breaks games that resolve
+        // resources relative to it.
         case BUILTIN_VAR_PROGRAM_DIRECTORY:
-            return RValue_makeString(Runner_getProgramDirectory(runner));
         case BUILTIN_VAR_WORKING_DIRECTORY: {
             FileSystem* fs = runner->fileSystem;
             return RValue_makeOwnedString(fs->vtable->resolvePath(fs, ""));
@@ -26117,6 +26121,7 @@ void VMBuiltins_registerAll(VMContext* ctx) {
     VM_registerBuiltin(ctx,"gpu_set_texfilter", builtin_gpu_set_texfilter);
     VM_registerBuiltin(ctx,"gpu_set_tex_filter", builtin_gpu_set_texfilter);
     VM_registerBuiltin(ctx,"gpu_get_texfilter", builtin_gpu_get_texfilter);
+    VM_registerBuiltin(ctx,"gpu_get_tex_filter", builtin_gpu_get_texfilter);
     VM_registerBuiltin(ctx,"gpu_set_alphatestenable", builtin_gpu_set_alphatestenable);
     VM_registerBuiltin(ctx,"gpu_get_alphatestenable", builtin_gpu_get_alphatestenable);
     VM_registerBuiltin(ctx,"gpu_set_alphatestref", builtin_gpu_set_alphatestref);

@@ -102,14 +102,46 @@ void* External_openLibrary(const char* name, char* error, size_t errorSize) {
     if (error != NULL && errorSize > 0) snprintf(error, errorSize, "dynamic library loading is not supported on this platform");
     return NULL;
 #elif defined(_WIN32)
-    HMODULE library = LoadLibraryA(name);
-    if (library != NULL) return (void*) library;
+    // Game extension DLLs usually sit next to their own dependencies (bass.dll,
+    // CRT/runtime DLLs shipped with the game, ...). Plain LoadLibraryA resolves
+    // those through the host process' search order - runner executable directory,
+    // system directories, current directory, PATH - never through the loaded
+    // DLL's directory, so a game started from a different working directory
+    // fails with ERROR_MOD_NOT_FOUND (126). For absolute paths, ask the loader
+    // to search the DLL's directory first, which is how GameMaker's runner
+    // loads extension DLLs. Bare names keep the system search path; the plain
+    // call stays as a fallback for paths the altered search rejects.
+    //
+    // The file system layer joins game paths with '/', but the loader only
+    // honours LOAD_WITH_ALTERED_SEARCH_PATH for backslash paths: with '/' it
+    // silently falls back to the default search and the dependency lookup
+    // fails again. Normalise a copy for the loader only.
+    char* normalizedName = NULL;
+    if (strchr(name, '/') != NULL) {
+        size_t nameLength = strlen(name);
+        normalizedName = (char*) safeMalloc(nameLength + 1);
+        for (size_t i = 0; i <= nameLength; i++)
+            normalizedName[i] = name[i] == '/' ? '\\' : name[i];
+    }
+    const char* loadName = normalizedName != NULL ? normalizedName : name;
+
+    bool absolutePath = loadName[0] != '\0' &&
+        ((((loadName[0] >= 'a' && loadName[0] <= 'z') || (loadName[0] >= 'A' && loadName[0] <= 'Z')) && loadName[1] == ':') ||
+         loadName[0] == '\\' || loadName[0] == '/');
+    HMODULE library = absolutePath
+        ? LoadLibraryExA(loadName, NULL, LOAD_WITH_ALTERED_SEARCH_PATH)
+        : LoadLibraryA(loadName);
+    if (library == NULL && absolutePath) library = LoadLibraryA(loadName);
+    if (library != NULL) {
+        free(normalizedName);
+        return (void*) library;
+    }
 
     DWORD lastError = GetLastError();
     uint16_t machine = 0;
     bool isArchError = lastError == ERROR_BAD_EXE_FORMAT || lastError == ERROR_EXE_MACHINE_TYPE_MISMATCH;
     if (error != NULL && errorSize > 0) {
-        if (isArchError && externalReadPeMachine(name, &machine)) {
+        if (isArchError && externalReadPeMachine(loadName, &machine)) {
             snprintf(error, errorSize,
                      "architecture mismatch: the DLL is %s but this Butterscotch build is %s "
                      "(Windows error %lu); run the matching-architecture build",
@@ -118,10 +150,15 @@ void* External_openLibrary(const char* name, char* error, size_t errorSize) {
             snprintf(error, errorSize,
                      "not a valid DLL for this %s build (Windows error %lu)",
                      externalHostArchName(), (unsigned long) lastError);
+        } else if (lastError == ERROR_MOD_NOT_FOUND) {
+            snprintf(error, errorSize,
+                     "Windows error %lu (a DLL this module depends on was not found next to it or on the search path)",
+                     (unsigned long) lastError);
         } else {
             snprintf(error, errorSize, "Windows error %lu", (unsigned long) lastError);
         }
     }
+    free(normalizedName);
     return NULL;
 #else
     void* library = dlopen(name, RTLD_NOW);
@@ -202,14 +239,33 @@ void External_closeLibrary(void* library) {
 
 // GameMaker documents that external functions with 4+ arguments must use ty_real
 // for every argument, so only the 0..3 argument cases need mixed-type dispatch.
+// mask bit i is set when argument i is ty_string (matches builtin_external_call).
+#if defined(_MSC_VER) && defined(_M_IX86)
+/* GameMaker tolerates a declared calling convention that does not match the
+ * DLL (Mvz2's MaizeMusic.dll is cdecl but declares dll_stdcall), and a plain
+ * __stdcall call through such a function leaves the arguments on the stack,
+ * which corrupts the caller. Remember ESP around the call and restore it: for
+ * a genuine __stdcall callee the restore is a no-op, for a __cdecl callee it
+ * undoes the leftover arguments. */
+#define EXT_STACK_SAVE(var) do { __asm { mov var, esp }; } while (0)
+#define EXT_STACK_RESTORE(var) do { __asm { mov esp, var }; } while (0)
+#else
+#define EXT_STACK_SAVE(var) ((void) 0)
+#define EXT_STACK_RESTORE(var) ((void) 0)
+#endif
+
 #define EXT_CALL_CASE(CONV, n, mask, TYPES, ARGS) \
     case (((n) << 8) | (mask)): { \
+        void* extStackBase = NULL; \
+        EXT_STACK_SAVE(extStackBase); \
         if (def->returnType == 1) { \
             char* result = ((char* (CONV *) TYPES) def->symbol) ARGS; \
+            EXT_STACK_RESTORE(extStackBase); \
             *outString = safeStrdup(result != NULL ? result : ""); \
             *outReal = 0.0; \
         } else { \
             *outReal = (double) ((double (CONV *) TYPES) def->symbol) ARGS; \
+            EXT_STACK_RESTORE(extStackBase); \
             *outString = NULL; \
         } \
         return true; \
@@ -220,16 +276,16 @@ void External_closeLibrary(void* library) {
     EXT_CALL_CASE(CONV, 1, 0, (double), (d[0])) \
     EXT_CALL_CASE(CONV, 1, 1, (char*), (s[0])) \
     EXT_CALL_CASE(CONV, 2, 0, (double, double), (d[0], d[1])) \
-    EXT_CALL_CASE(CONV, 2, 1, (double, char*), (d[0], s[1])) \
-    EXT_CALL_CASE(CONV, 2, 2, (char*, double), (s[0], d[1])) \
+    EXT_CALL_CASE(CONV, 2, 1, (char*, double), (s[0], d[1])) \
+    EXT_CALL_CASE(CONV, 2, 2, (double, char*), (d[0], s[1])) \
     EXT_CALL_CASE(CONV, 2, 3, (char*, char*), (s[0], s[1])) \
     EXT_CALL_CASE(CONV, 3, 0, (double, double, double), (d[0], d[1], d[2])) \
-    EXT_CALL_CASE(CONV, 3, 1, (double, double, char*), (d[0], d[1], s[2])) \
+    EXT_CALL_CASE(CONV, 3, 1, (char*, double, double), (s[0], d[1], d[2])) \
     EXT_CALL_CASE(CONV, 3, 2, (double, char*, double), (d[0], s[1], d[2])) \
-    EXT_CALL_CASE(CONV, 3, 3, (double, char*, char*), (d[0], s[1], s[2])) \
-    EXT_CALL_CASE(CONV, 3, 4, (char*, double, double), (s[0], d[1], d[2])) \
+    EXT_CALL_CASE(CONV, 3, 3, (char*, char*, double), (s[0], s[1], d[2])) \
+    EXT_CALL_CASE(CONV, 3, 4, (double, double, char*), (d[0], d[1], s[2])) \
     EXT_CALL_CASE(CONV, 3, 5, (char*, double, char*), (s[0], d[1], s[2])) \
-    EXT_CALL_CASE(CONV, 3, 6, (char*, char*, double), (s[0], s[1], d[2])) \
+    EXT_CALL_CASE(CONV, 3, 6, (double, char*, char*), (d[0], s[1], s[2])) \
     EXT_CALL_CASE(CONV, 3, 7, (char*, char*, char*), (s[0], s[1], s[2])) \
     EXT_CALL_CASE(CONV, 4, 0, (double, double, double, double), (d[0], d[1], d[2], d[3])) \
     EXT_CALL_CASE(CONV, 5, 0, (double, double, double, double, double), (d[0], d[1], d[2], d[3], d[4])) \
