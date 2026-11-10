@@ -44,8 +44,11 @@ static RuntimeFontResource* g_fontResources;
 static int32_t g_fontResourceCount;
 static int32_t g_fontResourceCapacity;
 
-// Enough for practical fonts while keeping a single atlas below the common 8192px limit.
-#define RUNTIME_FONT_MAX_GLYPHS 16384
+// A TrueType font can map nearly every BMP codepoint (Unifont: ~65k, CJK fonts:
+// ~30k), and font_add(..., 0, 65535) asks for exactly that. The previous 16384
+// cap silently dropped the tail of such fonts (most CJK, all Hangul). Whether
+// the rasterised glyphs actually fit one texture is decided during packing.
+#define RUNTIME_FONT_MAX_GLYPHS 65536
 #define RUNTIME_FONT_MAX_ATLAS 8192
 #define RUNTIME_FONT_RANGE_THRESHOLD 4096
 
@@ -359,7 +362,7 @@ int32_t RuntimeFont_add(Runner* runner, const char* name, double size, bool bold
     for (int32_t codepoint = rangeStart; codepoint <= rangeEnd && codepoint <= 0xFFFF; codepoint++) {
         if (codepoint == 0) continue;
         if (glyphCount >= RUNTIME_FONT_MAX_GLYPHS) {
-            logWarn("[font_add] TODO: font '%s' exceeds %d glyphs; remaining glyphs were skipped\n", name, RUNTIME_FONT_MAX_GLYPHS);
+            logWarn("[font_add] font '%s' exceeds the %d glyph limit; remaining glyphs were skipped\n", name, RUNTIME_FONT_MAX_GLYPHS);
             break;
         }
 
@@ -433,7 +436,9 @@ int32_t RuntimeFont_add(Runner* runner, const char* name, double size, bool bold
         glyph->drawY = (ascent - glyph->bitmapTop) - lineTop;
         totalArea += (size_t) (glyph->cellWidth + 1) * (size_t) (glyph->cellHeight + 1);
     }
-    while (atlasWidth < RUNTIME_FONT_MAX_ATLAS / 2 && (size_t) atlasWidth * (size_t) atlasWidth < totalArea) {
+    // Grow up to the full atlas width; the old half-atlas ceiling forced
+    // many-glyph fonts to overflow the height even when a wider page fits.
+    while (atlasWidth < RUNTIME_FONT_MAX_ATLAS && (size_t) atlasWidth * (size_t) atlasWidth < totalArea) {
         atlasWidth *= 2;
     }
     for (int32_t i = 0; i < glyphCount; i++) {
@@ -460,7 +465,7 @@ int32_t RuntimeFont_add(Runner* runner, const char* name, double size, bool bold
             rowHeight = 0;
         }
         if (penY + glyph->cellHeight > RUNTIME_FONT_MAX_ATLAS) {
-            logWarn("[font_add] TODO: font '%s' atlas exceeded %d px; %d glyphs were skipped\n",
+            logWarn("[font_add] font '%s' atlas exceeded %d px; %d glyphs were skipped\n",
                     name, RUNTIME_FONT_MAX_ATLAS, glyphCount - placedGlyphs);
             break;
         }
@@ -525,6 +530,7 @@ int32_t RuntimeFont_add(Runner* runner, const char* name, double size, bool bold
         free(glyphs);
         return -1;
     }
+    logInfo("[font_add] '%s': %d glyphs on a %dx%d atlas\n", name, placedGlyphs, atlasWidth, atlasHeight);
 
     FontGlyph* fontGlyphs = (FontGlyph*) safeMalloc((size_t) placedGlyphs * sizeof(FontGlyph));
     memset(fontGlyphs, 0, (size_t) placedGlyphs * sizeof(FontGlyph));
