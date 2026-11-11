@@ -15,7 +15,86 @@ static Runner *g_runner;
 static int32_t fbWidth, fbHeight;
 static SDL_Surface* scr;
 static SDL_Window *window;
-static SDL_Gamepad* openControllers[MAX_GAMEPADS];
+static SDL_GameController* openControllers[MAX_GAMEPADS];
+
+/* Set by an in-process host (ButterscotchDbg) that draws the game inside its own
+ * view tree instead of a top-level window. Consumed by the next platformInit. */
+static intptr_t embeddedWindow = 0;
+static int32_t embeddedWindowKind = 0;
+
+bool platformSetEmbeddedWindow(intptr_t handle, int32_t kind) {
+    /* 1 = Win32 HWND, 2 = Android Surface (jobject). Anything else is not a window. */
+    if (kind != 1 && kind != 2)
+        return false;
+    embeddedWindow = handle;
+    embeddedWindowKind = kind;
+    return true;
+}
+
+/* Properties for SDL_CreateWindowWithProperties when the host supplied its own
+ * window; the runner must not create a second top-level window on Android. */
+static SDL_PropertiesID embeddedWindowProperties(void) {
+    SDL_PropertiesID properties = SDL_CreateProperties();
+    if (properties == 0)
+        return 0;
+
+    if (embeddedWindowKind == 1) {
+#if defined(SDL_PROP_WINDOW_WIN32_HWND_POINTER)
+        SDL_SetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+                               (void*) embeddedWindow);
+#else
+        SDL_DestroyProperties(properties);
+        return 0;
+#endif
+    } else if (embeddedWindowKind == 2) {
+#if defined(SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER)
+        SDL_SetPointerProperty(properties, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,
+                               (void*) embeddedWindow);
+#else
+        SDL_DestroyProperties(properties);
+        return 0;
+#endif
+    } else {
+        SDL_DestroyProperties(properties);
+        return 0;
+    }
+
+    return properties;
+}
+
+/* Creates a window: either a regular top-level one, or a wrapper around the
+ * native window a single-window host supplied (Android surface, Win32 HWND). */
+static SDL_Window *createWindow(int reqW, int reqH, const char* title, Uint32 flags) {
+    SDL_Window *newWindow;
+
+    if (embeddedWindow == 0)
+        return SDL_CreateWindow(title, reqW, reqH, flags);
+
+    SDL_PropertiesID properties = embeddedWindowProperties();
+    if (properties == 0) {
+        logError("Fatal: the platform backend cannot render into the supplied window (kind %d)\n",
+                 (int) embeddedWindowKind);
+        return NULL;
+    }
+
+    SDL_SetStringProperty(properties, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
+    SDL_SetNumberProperty(properties, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, reqW);
+    SDL_SetNumberProperty(properties, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, reqH);
+    SDL_SetBooleanProperty(properties, SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN,
+                           (flags & SDL_WINDOW_OPENGL) != 0);
+    SDL_SetBooleanProperty(properties, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN,
+                           (flags & SDL_WINDOW_RESIZABLE) != 0);
+    SDL_SetBooleanProperty(properties, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN,
+                           (flags & SDL_WINDOW_HIDDEN) != 0);
+
+    newWindow = SDL_CreateWindowWithProperties(properties);
+    SDL_DestroyProperties(properties);
+
+    embeddedWindow = 0;
+    embeddedWindowKind = 0;
+    return newWindow;
+}
+
 
 static const int SDL_TO_GML_BUTTON[SDL_GAMEPAD_BUTTON_COUNT] = {
     [SDL_GAMEPAD_BUTTON_SOUTH]          = 0,
@@ -36,13 +115,12 @@ static const int SDL_TO_GML_BUTTON[SDL_GAMEPAD_BUTTON_COUNT] = {
 };
 
 static SDL_Window *tryOpenWindow(int reqW, int reqH, const char* title, Uint32 flags) {
+    /* An embedded window is a single fixed target: there is nothing to retry and
+     * no second window to open, so the GL loop below is skipped. */
+    bool embedded = embeddedWindow != 0;
+
     if (gfx == SOFTWARE) {
-        return SDL_CreateWindow(
-            title,
-            reqW,
-            reqH,
-            flags
-        );
+        return createWindow(reqW, reqH, title, flags);
     }
     if (gfx == LEGACY_GL) {
         SDL_GL_ResetAttributes();
@@ -50,12 +128,7 @@ static SDL_Window *tryOpenWindow(int reqW, int reqH, const char* title, Uint32 f
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, 0);
 
-        SDL_Window *newWindow = SDL_CreateWindow(
-            title,
-            reqW,
-            reqH,
-            flags
-        );
+        SDL_Window *newWindow = createWindow(reqW, reqH, title, flags);
 
         if (newWindow) {
             if (SDL_GL_CreateContext(newWindow)) {
@@ -91,12 +164,7 @@ static SDL_Window *tryOpenWindow(int reqW, int reqH, const char* title, Uint32 f
 
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, contextFlags);
 
-        newWindow = SDL_CreateWindow(
-            title,
-            reqW,
-            reqH,
-            flags
-        );
+        newWindow = createWindow(reqW, reqH, title, flags);
 
         if (newWindow) {
             if (SDL_GL_CreateContext(newWindow)) {
@@ -104,7 +172,8 @@ static SDL_Window *tryOpenWindow(int reqW, int reqH, const char* title, Uint32 f
             }
             SDL_DestroyWindow(newWindow);
         }
-
+        if (embedded)
+            return NULL;
     }
     return NULL;
 }
