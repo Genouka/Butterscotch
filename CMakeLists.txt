@@ -102,8 +102,11 @@ if(PLATFORM STREQUAL "cli" AND BACKEND STREQUAL "")
     message(FATAL_ERROR "You need to set a BACKEND!")
 endif()
 
-if(PLATFORM STREQUAL "embedded" AND NOT BACKEND STREQUAL "sdl2" AND NOT BACKEND STREQUAL "noop")
-    message(FATAL_ERROR "PLATFORM=embedded requires BACKEND=sdl2 (or BACKEND=noop for headless builds)")
+if(PLATFORM STREQUAL "embedded"
+   AND NOT BACKEND STREQUAL "sdl2"
+   AND NOT BACKEND STREQUAL "noop"
+   AND NOT BACKEND STREQUAL "android_egl")
+    message(FATAL_ERROR "PLATFORM=embedded requires BACKEND=sdl2, sdl3, noop or android_egl")
 endif()
 
 set(BUTTERSCOTCH_TARGET butterscotch)
@@ -166,6 +169,13 @@ if(BACKEND STREQUAL "noop")
     set(ENABLE_NOOP_RENDERER ON CACHE BOOL "Enable the no-op renderer (headless stub, no drawing)" FORCE)
     set(ENABLE_LEGACY_GL OFF CACHE BOOL "Enable the legacy OpenGL renderer" FORCE)
     set(ENABLE_MODERN_GL OFF CACHE BOOL "Enable the modern OpenGL renderer" FORCE)
+endif()
+
+# Android renders through GLES3 directly (<GLES3/gl3.h>); glad and the legacy
+# desktop-GL renderer are not usable there, so build modern-GL only.
+if(BACKEND STREQUAL "android_egl")
+    set(ENABLE_LEGACY_GL OFF CACHE BOOL "Enable the legacy OpenGL renderer" FORCE)
+    set(ENABLE_MODERN_GL ON CACHE BOOL "Enable the modern OpenGL renderer" FORCE)
 endif()
 if(ENABLE_NOOP_RENDERER AND NOT BACKEND STREQUAL "noop")
     message(FATAL_ERROR "ENABLE_NOOP_RENDERER is exclusive to BACKEND=noop")
@@ -250,6 +260,11 @@ if(PLATFORM STREQUAL "embedded")
         set_target_properties(${BUTTERSCOTCH_TARGET} PROPERTIES
             BUILD_RPATH "$ORIGIN"
             INSTALL_RPATH "$ORIGIN")
+    endif()
+
+    # Android 15+ requires 16 KB page alignment for packaged shared libraries.
+    if(ANDROID)
+        target_link_options(${BUTTERSCOTCH_TARGET} PRIVATE "-Wl,-z,max-page-size=16384")
     endif()
 endif()
 
@@ -362,7 +377,8 @@ elseif(AUDIO_BACKEND STREQUAL "miniaudio")
     target_include_directories(${BUTTERSCOTCH_TARGET} SYSTEM PUBLIC vendor/miniaudio)
     target_include_directories(${BUTTERSCOTCH_TARGET} PUBLIC src/audio/miniaudio)
     add_compile_definitions(USE_MINIAUDIO)
-    if (NOT WIN32)
+    # Android's bionic has pthreads in libc; there is no separate -lpthread.
+    if (NOT WIN32 AND NOT ANDROID)
         set(AUDIO_LIBRARIES pthread)
     endif()
 elseif(AUDIO_BACKEND STREQUAL "web")
@@ -651,6 +667,13 @@ if(PLATFORM STREQUAL "cli" OR PLATFORM STREQUAL "embedded" OR PLATFORM STREQUAL 
         target_include_directories(${BUTTERSCOTCH_TARGET} PRIVATE ${SDL3_INCLUDE_DIRS})
         target_link_directories(${BUTTERSCOTCH_TARGET} PRIVATE ${SDL3_LIBRARY_DIRS})
         set(BACKEND_LIBRARIES ${SDL3_LIBRARIES})
+    elseif(BACKEND STREQUAL "android_egl")
+        if(NOT ANDROID)
+            message(FATAL_ERROR "BACKEND=android_egl requires the Android NDK toolchain")
+        endif()
+        add_compile_definitions(USE_ANDROID_EGL)
+        # EGL/GLESv3/log/android are appended to the link libraries for ANDROID.
+        set(BACKEND_LIBRARIES "")
     elseif(BACKEND STREQUAL "appkit")
         add_compile_definitions(USE_APPKIT)
         target_compile_definitions(${BUTTERSCOTCH_TARGET} PRIVATE GL_SILENCE_DEPRECATION)
@@ -683,6 +706,11 @@ if(PLATFORM STREQUAL "cli" OR PLATFORM STREQUAL "embedded" OR PLATFORM STREQUAL 
         )
     else()
         set(BUTTERSCOTCH_CONSOLE_LIBS ${BACKEND_LIBRARIES} ${AUDIO_LIBRARIES} ${PLATFORM_LIBRARIES})
+        if (ANDROID)
+            # NDK system libraries: EGL for the GL context, GLESv3 for rendering,
+            # log for __android_log_*, android for ANativeWindow APIs.
+            list(APPEND BUTTERSCOTCH_CONSOLE_LIBS EGL GLESv3 log android)
+        endif()
     endif()
 
     # Console SDKs link pre-built static archives alongside the platform
