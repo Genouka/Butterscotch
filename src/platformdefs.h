@@ -137,9 +137,17 @@ typedef struct {
     enum GlSurfaceFormat glSurfaceFormat;
 #endif
     bool fullscreen;
+    /* Render into an existing native window instead of creating one. Set by
+     * in-process hosts (ButterscotchDbg) on single-window platforms. */
+    intptr_t embedWindow;   // 0 = create a top-level window
+    int32_t embedWindowKind;// 0 = none, 1 = Win32 HWND, 2 = Android Surface
 } CommandLineArgs;
 
 bool platformInit(int32_t reqW, int32_t reqH, const char *title, bool headless, bool fullscreen);
+/* Hands the next window platformInit creates over to an existing native window.
+ * Backends that cannot render into a foreign window return false, and the runner
+ * then falls back to creating its own. */
+bool platformSetEmbeddedWindow(intptr_t handle, int32_t kind);
 void platformInitFunctions(Runner *);
 void platformExit(void);
 void platformSwapBuffers(void);

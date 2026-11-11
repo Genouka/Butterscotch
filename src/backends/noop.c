@@ -13,8 +13,14 @@ static int32_t g_width = 0;
 static int32_t g_height = 0;
 static bool g_initialized = false;
 
+bool platformSetEmbeddedWindow(intptr_t handle, int32_t kind) {
+    /* A no-op backend has no window to render into. */
+    (void)handle;
+    (void)kind;
+    return false;
+}
+
 bool platformInit(int32_t reqW, int32_t reqH, const char *title, bool headless, bool fullscreen) {
-    (void)title;
     (void)headless;
     (void)fullscreen;
     g_width = reqW > 0 ? reqW : 640;

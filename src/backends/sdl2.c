@@ -30,7 +30,26 @@ static SDL_Surface* scr;
 static SDL_Window *window;
 static SDL_GameController* openControllers[MAX_GAMEPADS];
 
+/* Set by an in-process host (ButterscotchDbg) that draws the game inside its own
+ * view tree instead of a top-level window. Consumed by the next platformInit. */
+static intptr_t embeddedWindow = 0;
+static int32_t embeddedWindowKind = 0;
+
+bool platformSetEmbeddedWindow(intptr_t handle, int32_t kind) {
+    if (kind != 1) /* only Win32 HWNDs can be wrapped by SDL2 today */
+        return false;
+    embeddedWindow = handle;
+    embeddedWindowKind = kind;
+    return true;
+}
+
 static SDL_Window *tryOpenWindow(int reqW, int reqH, const char* title, Uint32 flags) {
+    if (embeddedWindowKind == 1 && embeddedWindow != 0) {
+        intptr_t handle = embeddedWindow;
+        embeddedWindow = 0;
+        embeddedWindowKind = 0;
+        return SDL_CreateWindowFrom((const void*) handle);
+    }
     if (gfx == SOFTWARE) {
         return SDL_CreateWindow(
             title,
