@@ -298,6 +298,16 @@ bool platformInit(int reqW, int reqH, const char *title, bool headless, bool ful
     return true;
 }
 
+#if defined(BSDBG) && !defined(_WIN32)
+/* SDL requires video init/quit to happen on the main thread. The embedded runner
+ * owns the game on its own thread, and asking X11/Wayland to tear the video
+ * backend down there crashes. Keep the subsystem alive between sessions and quit
+ * once, from the host's main thread, when the process exits. */
+static void bsdbgQuitAtExit(void) {
+    SDL_Quit();
+}
+#endif
+
 void platformExit(void) {
     for (int i = 0; i < MAX_GAMEPADS; i++) {
         if (openControllers[i]) {
@@ -305,7 +315,15 @@ void platformExit(void) {
             openControllers[i] = NULL;
         }
     }
+#if defined(BSDBG) && !defined(_WIN32)
+    static bool quitRegistered = false;
+    if (!quitRegistered) {
+        quitRegistered = true;
+        atexit(bsdbgQuitAtExit);
+    }
+#else
     SDL_Quit();
+#endif
 }
 
 static void platformSetCursor(int32_t cursorType) {

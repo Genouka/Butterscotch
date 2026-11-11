@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.21)
 
+# The embedded runner builds as a shared library (libbsdbg.so / libbsdbg.dylib).
+# The vendor static archives it links must be position independent on ELF and
+# Mach-O, otherwise the final link fails with relocation errors. Windows/MSVC
+# does not need this.
+if(PLATFORM STREQUAL "embedded" AND NOT WIN32)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if(PLATFORM STREQUAL "ps3")
     set(CMAKE_TOOLCHAIN_FILE ${CMAKE_SOURCE_DIR}/cmake/ppu.cmake)
 endif()
@@ -235,6 +243,14 @@ if(PLATFORM STREQUAL "embedded")
         "${CMAKE_CURRENT_SOURCE_DIR}/../ButterscotchDbg/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/../ButterscotchDbg/src"
     )
+
+    # Let the staged runtime find a SDL2 shipped next to it (the managed host
+    # stages libSDL2-2.0.so.0 alongside libbsdbg.so on Linux).
+    if(UNIX AND NOT APPLE)
+        set_target_properties(${BUTTERSCOTCH_TARGET} PROPERTIES
+            BUILD_RPATH "$ORIGIN"
+            INSTALL_RPATH "$ORIGIN")
+    endif()
 endif()
 
 # Video playback backend
