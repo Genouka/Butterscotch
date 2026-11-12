@@ -1106,7 +1106,13 @@ int loop(CommandLineArgs args, const char *argv0) {
                 shouldWindowClose = true;
                 continue;
             }
-            
+
+#ifdef BSDBG
+            /* Hosts without their own input pump (the embedded Android runner) deliver
+             * touch/key events queued from another thread at this safe point. */
+            BsdbgHook_ApplyInput(runner);
+#endif
+
             if (RunnerKeyboard_checkPressed(runner->keyboard, VK_F8)) {
                 bool isPaused = Runner_isPaused(runner);
                 Runner_setPaused(runner, !isPaused);
