@@ -416,8 +416,8 @@ target_include_directories(${BUTTERSCOTCH_TARGET} PUBLIC vendor/base64)
 # Image decoding deps
 if (IMAGE_DECODER STREQUAL "wuffs")
     # wuffs
-    target_sources(butterscotch PRIVATE vendor/wuffs/wuffs-v0.4.c)
-    target_include_directories(butterscotch SYSTEM PUBLIC vendor/wuffs)
+    target_sources(${BUTTERSCOTCH_TARGET} PRIVATE vendor/wuffs/wuffs-v0.4.c)
+    target_include_directories(${BUTTERSCOTCH_TARGET} SYSTEM PUBLIC vendor/wuffs)
     add_compile_definitions(USE_WUFFS_IMGDEC)
 elseif(IMAGE_DECODER STREQUAL "stb")
     add_compile_definitions(USE_STB_IMGDEC)
