@@ -35,8 +35,11 @@ static int32_t g_height = 0;
 
 typedef jint (*GetCreatedJavaVMsFn)(JavaVM **, jsize, jsize *);
 
-/* The NDK does not export JNI_GetCreatedJavaVMs from a linkable library; the
- * ART runtime exports it, so resolve it from there on first use. */
+/* The NDK does not export JNI_GetCreatedJavaVMs from a linkable library. Since
+ * Android 7 the linker namespaces only let an app dlopen() public NDK
+ * libraries, and libart.so is not on that list; libnativehelper.so is, and it
+ * is the ART module that exports JNI_GetCreatedJavaVMs. Keep libart.so and the
+ * global scope as fallbacks for hosts where those are reachable. */
 static JavaVM *android_vm(void) {
     static JavaVM *vm = NULL;
     static bool tried = false;
@@ -44,14 +47,23 @@ static JavaVM *android_vm(void) {
 
     if (!tried) {
         GetCreatedJavaVMsFn getVms = NULL;
-        void *art;
+        void *lib;
 
         tried = true;
-        art = dlopen("libart.so", RTLD_NOW);
-        if (art != NULL)
-            getVms = (GetCreatedJavaVMsFn) (void *) dlsym(art, "JNI_GetCreatedJavaVMs");
-        if (getVms == NULL || getVms(&vm, 1, &count) != JNI_OK || count == 0)
+        lib = dlopen("libnativehelper.so", RTLD_NOW);
+        if (lib != NULL)
+            getVms = (GetCreatedJavaVMsFn) (void *) dlsym(lib, "JNI_GetCreatedJavaVMs");
+        if (getVms == NULL) {
+            lib = dlopen("libart.so", RTLD_NOW);
+            if (lib != NULL)
+                getVms = (GetCreatedJavaVMsFn) (void *) dlsym(lib, "JNI_GetCreatedJavaVMs");
+        }
+        if (getVms == NULL)
+            getVms = (GetCreatedJavaVMsFn) (void *) dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+        if (getVms == NULL || getVms(&vm, 1, &count) != JNI_OK || count == 0) {
+            logWarn("Android backend: the JavaVM could not be resolved\n");
             vm = NULL;
+        }
     }
     return vm;
 }
@@ -72,28 +84,46 @@ static JNIEnv *android_env(void) {
 bool platformSetEmbeddedWindow(intptr_t handle, int32_t kind) {
     JNIEnv *env;
     jobject global;
+    ANativeWindow *window;
 
     /* BSDBG_EMBED_ANDROID_SURFACE: handle is an android.view.Surface jobject. */
-    if (kind != 2 || handle == 0)
+    if (kind != 2 || handle == 0) {
+        logWarn("Android backend: unsupported embedded window (kind %d)\n", (int) kind);
         return false;
+    }
 
+    /* Called on the host's thread, which is the thread the JNI reference belongs
+     * to; the retained global reference and the ANativeWindow are valid from the
+     * runner thread afterwards. */
     env = android_env();
-    if (env == NULL)
+    if (env == NULL) {
+        logWarn("Android backend: no JNIEnv for the host surface\n");
         return false;
+    }
 
-    /* The caller's reference may be local to its JNI frame; keep our own. */
     global = (*env)->NewGlobalRef(env, (jobject) handle);
-    if (global == NULL)
+    if (global == NULL) {
+        logWarn("Android backend: could not retain the host surface\n");
         return false;
+    }
 
+    window = ANativeWindow_fromSurface(env, global);
+    if (window == NULL) {
+        (*env)->DeleteGlobalRef(env, global);
+        logWarn("Android backend: ANativeWindow_fromSurface failed\n");
+        return false;
+    }
+
+    if (g_window != NULL)
+        ANativeWindow_release(g_window);
     if (g_surface != NULL)
         (*env)->DeleteGlobalRef(env, g_surface);
     g_surface = global;
+    g_window = window;
     return true;
 }
 
 bool platformInit(int32_t reqW, int32_t reqH, const char *title, bool headless, bool fullscreen) {
-    JNIEnv *env;
     EGLint numConfigs = 0;
     EGLConfig config = NULL;
     const EGLint configAttribs[] = {
@@ -123,15 +153,8 @@ bool platformInit(int32_t reqW, int32_t reqH, const char *title, bool headless, 
         return true;
     }
 
-    env = android_env();
-    if (env == NULL || g_surface == NULL) {
-        logError("Android backend: no surface was supplied by the host\n");
-        return false;
-    }
-
-    g_window = ANativeWindow_fromSurface(env, g_surface);
     if (g_window == NULL) {
-        logError("Android backend: ANativeWindow_fromSurface failed\n");
+        logError("Android backend: no surface was supplied by the host\n");
         return false;
     }
 
